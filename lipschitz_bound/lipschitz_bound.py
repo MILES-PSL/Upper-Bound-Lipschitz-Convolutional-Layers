@@ -1,4 +1,3 @@
-from collections import defaultdict
 from itertools import product
 from functools import reduce
 import numpy as np
@@ -16,13 +15,14 @@ except:
 class LipschitzBound:
 
   def __init__(self, kernel_shape, padding, sample=50, backend='torch',
-               cuda=True):
+               version='v1', cuda=True):
 
     self.kernel_shape = kernel_shape
     self.padding = padding
     self.sample = sample
     self.backend = backend
     self.cuda = cuda
+    self.version = version
 
     cout, cin, ksize, _ = kernel_shape
 
@@ -66,11 +66,21 @@ class LipschitzBound:
       self.samples = (real, imag)
 
   def compute(self, *args, **kwargs):
-    if self.backend == 'torch':
-      return self._compute_from_torch(*args, **kwargs)
-    return self._compute_from_numpy(*args, **kwargs)
+    if self.version == 'v1':
+      return self.compute_v1(*args, **kwargs)
+    return self.compute_v2(*args, **kwargs)
 
-  def _compute_from_numpy(self, kernel):
+  def compute_v1(self, *args, **kwargs):
+    if self.backend == 'torch':
+      return self._compute_from_torch_v1(*args, **kwargs)
+    return self._compute_from_numpy_v1(*args, **kwargs)
+
+  def compute_v2(self, *args, **kwargs):
+    if self.backend == 'torch':
+      return self._compute_from_torch_v2(*args, **kwargs)
+    return self._compute_from_numpy_v2(*args, **kwargs)
+
+  def _compute_from_numpy_v1(self, kernel):
     """Compute the LipGrid Algorithm."""
     pad = self.padding
     cout, cin, ksize, _ = kernel.shape
@@ -81,52 +91,102 @@ class LipschitzBound:
     poly = (ker * self.samples).sum(axis=2)
     poly = np.square(np.abs(poly)).sum(axis=1)
     sv_max = np.sqrt(poly.max(axis=-1).sum())
-    return sv_max
+    d = (ksize - 1) / 2
+    return 1/(1 - (2*d)/self.sample) * sv_max
 
-  def _compute_from_torch_naive(self, kernel):
+  def _compute_from_numpy_v2(self, kernel):
+    """Compute a tighter bound"""
+    pad = self.padding
+    cout, cin, ksize, _ = kernel.shape
+    if cout > cin:
+      kernel = np.transpose(kernel, axes=[1, 0, 2, 3])
+      cout, cin = cin, cout
+    ker = kernel.reshape(cout, cin, -1)[..., np.newaxis]
+    poly = (ker * self.samples).sum(axis=2)
+    poly = np.square(np.abs(poly)).sum(axis=(0, 1))
+    sv_max = np.sqrt(poly.max())
+    d = (ksize - 1) / 2
+    return 1/(1 - (2*d)/self.sample) * sv_max
+
+  def _compute_from_torch_naive_v1(self, kernel):
     """Compute the LipGrid Algo with Torch"""
     pad = self.padding
     cout, cin, ksize, _ = kernel.shape
     if cout > cin:
       kernel = torch.transpose(kernel, 0, 1)
       cout, cin = cin, cout
-
     ker = kernel.view(cout, cin, -1, 1)
     real, imag = self.samples
-
     poly_real = torch.mul(ker, real).sum(axis=2)
     poly_imag = torch.mul(ker, imag).sum(axis=2)
-
     poly = torch.mul(poly_real, poly_real) + \
         torch.mul(poly_imag, poly_imag)
     poly = poly.sum(axis=1)
     sv_max = torch.sqrt(poly.max(axis=-1)[0].sum())
-    return sv_max
+    d = (ksize - 1) / 2
+    return 1/(1 - (2*d)/self.sample) * sv_max
 
-  def _compute_from_torch(self, kernel):
+  def _compute_from_torch_naive_v2(self, kernel):
+    """Compute the LipGrid Algo with Torch 
+    with v2 implementation"""
+    pad = self.padding
+    cout, cin, ksize, _ = kernel.shape
+    ker = kernel.view(cout, cin, -1, 1)
+    real, imag = self.samples
+    poly_real = torch.mul(ker, real).sum(axis=2)
+    poly_imag = torch.mul(ker, imag).sum(axis=2)
+    poly = torch.mul(poly_real, poly_real) + \
+      torch.mul(poly_imag, poly_imag)
+    poly = poly.sum(axis=(0, 1))
+    sv_max = torch.sqrt(poly.max())
+    d = (ksize - 1) / 2
+    return 1/(1 - (2*d)/self.sample) * sv_max
+
+  def _compute_from_torch_v1(self, kernel):
     """Compute the LipGrid Algo with Torch"""
+    device = kernel.device
     pad = self.padding
     cout, cin, ksize, _ = kernel.shape
     if cout > cin:
       kernel = torch.transpose(kernel, 0, 1)
       cout, cin = cin, cout
-
+    # special case kernel 1x1
+    if ksize == 1:
+      ker = kernel.reshape(-1)
+      return torch.sqrt(torch.einsum('i,i->', ker, ker)) 
     real, imag = self.samples
-    if not kernel.is_contiguous:
-      kernel = kernel.contiguous()
-    if not real.is_contiguous():
-      real = real.contiguous()
-    if not imag.is_contiguous():
-      imag = imag.contiguous()
+    real = real.to(device)
+    imag = imag.to(device)
     ker = kernel.reshape(cout*cin, -1)
     poly_real = torch.matmul(ker, real).view(cout, cin, -1)
     poly_imag = torch.matmul(ker, imag).view(cout, cin, -1)
-
     poly1 = torch.einsum('ijk,ijk->ik', poly_real, poly_real)
     poly2 = torch.einsum('ijk,ijk->ik', poly_imag, poly_imag)
     poly = poly1 + poly2
-
     sv_max = torch.sqrt(poly.max(axis=-1)[0].sum())
     return sv_max
 
+  def _compute_from_torch_v2(self, kernel):
+    """Compute the LipGrid Algo with Torch
+    with v2 implementation"""
+    device = kernel.device
+    pad = self.padding
+    cout, cin, ksize, _ = kernel.shape
+    # special case kernel 1x1
+    if ksize == 1:
+      ker = kernel.reshape(-1)
+      return torch.sqrt(torch.einsum('i,i->', ker, ker)) 
+    real, imag = self.samples
+    real = real.to(device)
+    imag = imag.to(device)
+    ker = kernel.reshape(cout*cin, -1)
+    poly_real = torch.matmul(ker, real).view(cout, cin, -1)
+    poly_imag = torch.matmul(ker, imag).view(cout, cin, -1)
+    poly1 = torch.einsum('ijk,ijk->k', poly_real, poly_real)
+    poly2 = torch.einsum('ijk,ijk->k', poly_imag, poly_imag)
+    poly = poly1 + poly2
+    sv_max = torch.sqrt(poly.max())
+    d = (ksize - 1) / 2
+    return 1/(1 - (2*d)/self.sample) * sv_max
 
+ 
