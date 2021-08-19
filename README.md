@@ -1,4 +1,3 @@
-
 This repository contains the code the paper the paper:
 
 ### On Lipschitz Regularization of Convolutional Layers using Toeplitz Matrix Theory
@@ -7,7 +6,8 @@ This repository contains the code the paper the paper:
 
 
 Code to use the bound:
-'''
+
+```python
 import torch
 import numpy as np
 from lipschitz_bound import LipschitzBound
@@ -21,10 +21,10 @@ print(f'LipBound computed with numpy: {sv_bound:.3f}')
 lb = LipschitzBound(kernel_torch.shape, padding=1, sample=50, backend='torch', cuda=False)
 sv_bound = lb.compute(kernel_torch)
 print(f'LipBound computed with torch: {sv_bound:.3f}')
-'''
+```
 
-
-'''
+Reference:
+```
 @article{araujo2021lipschitz,
   title={On Lipschitz Regularization of Convolutional Layers using Toeplitz Matrix Theory},
   author={Araujo, Alexandre and Negrevergne, Benjamin and Chevaleyre, Yann and Atif, Jamal},
@@ -32,6 +32,4 @@ print(f'LipBound computed with torch: {sv_bound:.3f}')
   url={https://arxiv.org/abs/2006.08391},
   year={2021}
 }
-'''
-
-
+```
